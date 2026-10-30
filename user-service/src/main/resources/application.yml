@@ -1,0 +1,26 @@
+server:
+  port: 8081
+  error:
+    include-message: always   # return our "seat already held" style messages to clients
+
+spring:
+  application:
+    name: user-service
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:3306/userdb?allowPublicKeyRetrieval=true&useSSL=false
+    username: ${DB_USER:ticket}
+    password: ${DB_PASSWORD:ticket123}
+  jpa:
+    hibernate:
+      ddl-auto: update   # fine for learning; switch to Flyway/Liquibase migrations for production
+    open-in-view: false
+
+jwt:
+  secret: ${JWT_SECRET:change-me-to-a-long-random-secret-of-32-chars-min}
+  validity: PT2H
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

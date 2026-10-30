@@ -1,0 +1,35 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      routes:
+        - id: user-service
+          uri: ${USER_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/api/auth/**,/api/users/**
+        - id: catalog-service
+          uri: ${CATALOG_SERVICE_URL:http://localhost:8082}
+          predicates:
+            - Path=/api/movies/**,/api/shows/**
+        - id: booking-service
+          uri: ${BOOKING_SERVICE_URL:http://localhost:8083}
+          predicates:
+            - Path=/api/bookings/**
+        - id: payment-service
+          uri: ${PAYMENT_SERVICE_URL:http://localhost:8084}
+          predicates:
+            - Path=/api/payments/**
+
+jwt:
+  # Must be at least 32 characters (256 bits) for HS256. Override with JWT_SECRET in real deployments.
+  secret: ${JWT_SECRET:change-me-to-a-long-random-secret-of-32-chars-min}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway

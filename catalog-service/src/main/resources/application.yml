@@ -1,0 +1,39 @@
+server:
+  port: 8082
+  error:
+    include-message: always   # return our "seat already held" style messages to clients
+
+spring:
+  application:
+    name: catalog-service
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:3306/catalogdb?allowPublicKeyRetrieval=true&useSSL=false
+    username: ${DB_USER:ticket}
+    password: ${DB_PASSWORD:ticket123}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: 6379
+  cache:
+    type: redis
+    redis:
+      time-to-live: 10m
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29092}
+    consumer:
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.trusted.packages: com.ticketbooking.common.events
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

@@ -1,0 +1,29 @@
+# Non-secret settings shared by all services
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: ticket-booking
+data:
+  DB_HOST: mysql
+  REDIS_HOST: redis
+  KAFKA_BOOTSTRAP: kafka:9092
+  RABBITMQ_HOST: rabbitmq
+  AWS_ENDPOINT: http://localstack:4566
+  USER_SERVICE_URL: http://user-service:8081
+  CATALOG_SERVICE_URL: http://catalog-service:8082
+  BOOKING_SERVICE_URL: http://booking-service:8083
+  PAYMENT_SERVICE_URL: http://payment-service:8084
+---
+# Secrets. In real clusters use Sealed Secrets / External Secrets / AWS Secrets Manager, never commit real values.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: ticket-booking
+type: Opaque
+stringData:
+  DB_USER: ticket
+  DB_PASSWORD: ticket123
+  MYSQL_ROOT_PASSWORD: root
+  JWT_SECRET: change-me-to-a-long-random-secret-of-32-chars-min

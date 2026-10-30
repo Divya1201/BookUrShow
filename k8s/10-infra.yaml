@@ -1,0 +1,212 @@
+# Development-only infrastructure: single replicas, no persistent volumes.
+# In production use managed services instead: Amazon RDS, ElastiCache, MSK, Amazon MQ, real SQS/SNS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-init
+  namespace: ticket-booking
+data:
+  init.sql: |
+    -- Database-per-service: each microservice owns its schema and never reads another service's tables.
+    CREATE DATABASE IF NOT EXISTS userdb;
+    CREATE DATABASE IF NOT EXISTS catalogdb;
+    CREATE DATABASE IF NOT EXISTS bookingdb;
+    CREATE DATABASE IF NOT EXISTS paymentdb;
+
+    CREATE USER IF NOT EXISTS 'ticket'@'%' IDENTIFIED BY 'ticket123';
+    GRANT ALL PRIVILEGES ON userdb.*    TO 'ticket'@'%';
+    GRANT ALL PRIVILEGES ON catalogdb.* TO 'ticket'@'%';
+    GRANT ALL PRIVILEGES ON bookingdb.* TO 'ticket'@'%';
+    GRANT ALL PRIVILEGES ON paymentdb.* TO 'ticket'@'%';
+    FLUSH PRIVILEGES;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: ticket-booking
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: mysql } }
+  template:
+    metadata: { labels: { app: mysql } }
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.4
+          ports: [{ containerPort: 3306 }]
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: app-secrets, key: MYSQL_ROOT_PASSWORD } }
+          volumeMounts:
+            - { name: init, mountPath: /docker-entrypoint-initdb.d }
+          readinessProbe:
+            exec: { command: ["sh", "-c", "mysqladmin ping -h 127.0.0.1 -uroot -p$MYSQL_ROOT_PASSWORD"] }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+      volumes:
+        - name: init
+          configMap: { name: mysql-init }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mysql, namespace: ticket-booking }
+spec:
+  selector: { app: mysql }
+  ports: [{ port: 3306 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: ticket-booking
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: redis } }
+  template:
+    metadata: { labels: { app: redis } }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          ports: [{ containerPort: 6379 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: redis, namespace: ticket-booking }
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: ticket-booking
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: kafka } }
+  template:
+    metadata: { labels: { app: kafka } }
+    spec:
+      enableServiceLinks: false   # stops K8s injecting KAFKA_PORT etc., which confuses the Kafka image
+      containers:
+        - name: kafka
+          image: apache/kafka:3.8.0
+          ports: [{ containerPort: 9092 }]
+          env:
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker,controller" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT://:9092,CONTROLLER://:9093" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka:9092" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@localhost:9093" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "1" }
+            - { name: KAFKA_NUM_PARTITIONS, value: "3" }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: kafka, namespace: ticket-booking }
+spec:
+  selector: { app: kafka }
+  ports: [{ port: 9092 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: ticket-booking
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: rabbitmq } }
+  template:
+    metadata: { labels: { app: rabbitmq } }
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.13-management
+          ports: [{ containerPort: 5672 }, { containerPort: 15672 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: rabbitmq, namespace: ticket-booking }
+spec:
+  selector: { app: rabbitmq }
+  ports:
+    - { name: amqp, port: 5672 }
+    - { name: management, port: 15672 }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: localstack-init
+  namespace: ticket-booking
+data:
+  init-aws.sh: |
+    #!/bin/bash
+    # Runs automatically when LocalStack is ready. Creates the SQS queues and SNS topic.
+    set -euo pipefail
+
+    REGION=us-east-1
+    ACCOUNT=000000000000
+
+    echo "Creating SQS queues..."
+    # Dead-letter queues first
+    awslocal sqs create-queue --queue-name payment-retry-dlq --region $REGION
+    awslocal sqs create-queue --queue-name payment-retry-queue --region $REGION \
+      --attributes '{"RedrivePolicy":"{\"deadLetterTargetArn\":\"arn:aws:sqs:'$REGION':'$ACCOUNT':payment-retry-dlq\",\"maxReceiveCount\":\"5\"}"}'
+
+    awslocal sqs create-queue --queue-name email-notification-queue --region $REGION
+    awslocal sqs create-queue --queue-name sms-notification-queue --region $REGION
+
+    echo "Creating SNS topic and fan-out subscriptions..."
+    TOPIC_ARN=$(awslocal sns create-topic --name booking-notifications --region $REGION --query TopicArn --output text)
+
+    for QUEUE in email-notification-queue sms-notification-queue; do
+      awslocal sns subscribe --region $REGION \
+        --topic-arn "$TOPIC_ARN" \
+        --protocol sqs \
+        --notification-endpoint "arn:aws:sqs:$REGION:$ACCOUNT:$QUEUE" \
+        --attributes RawMessageDelivery=true
+    done
+
+    echo "AWS resources ready: $TOPIC_ARN"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: localstack
+  namespace: ticket-booking
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: localstack } }
+  template:
+    metadata: { labels: { app: localstack } }
+    spec:
+      containers:
+        - name: localstack
+          image: localstack/localstack:3.8
+          ports: [{ containerPort: 4566 }]
+          env:
+            - { name: SERVICES, value: "sqs,sns" }
+            - { name: AWS_DEFAULT_REGION, value: "us-east-1" }
+          volumeMounts:
+            - { name: init, mountPath: /etc/localstack/init/ready.d }
+          readinessProbe:
+            exec: { command: ["sh", "-c", "awslocal sns list-topics | grep -q booking-notifications"] }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: init
+          configMap: { name: localstack-init, defaultMode: 0755 }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: localstack, namespace: ticket-booking }
+spec:
+  selector: { app: localstack }
+  ports: [{ port: 4566 }]
