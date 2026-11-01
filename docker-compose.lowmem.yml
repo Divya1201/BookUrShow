@@ -1,0 +1,18 @@
+x-java-lowmem: &java-lowmem
+  JAVA_OPTS: "-Xmx256m -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1"
+services:
+  mysql:
+    command: ["--performance-schema=OFF", "--innodb-buffer-pool-size=64M"]
+    mem_limit: 512m
+  redis: { mem_limit: 128m }
+  kafka:
+    environment: { KAFKA_HEAP_OPTS: "-Xmx384m -Xms384m" }
+    mem_limit: 768m
+  rabbitmq: { mem_limit: 384m }
+  localstack: { mem_limit: 768m }
+  api-gateway: { environment: *java-lowmem, mem_limit: 450m }
+  user-service: { environment: *java-lowmem, mem_limit: 450m }
+  catalog-service: { environment: *java-lowmem, mem_limit: 450m }
+  booking-service: { environment: *java-lowmem, mem_limit: 450m }
+  payment-service: { environment: *java-lowmem, mem_limit: 450m }
+  notification-service: { environment: *java-lowmem, mem_limit: 450m }
